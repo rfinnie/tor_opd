@@ -1,0 +1,73 @@
+#!/usr/bin/env python
+
+# Operation Plausible Deniability (OPD)
+# Copyright (C) 2014 Ryan Finnie
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+
+import sys
+import os
+import BaseHTTPServer
+import SocketServer
+import time
+import random
+
+URL_LIST = os.environ['URL_LIST']
+
+
+class HTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
+    server_version = ''
+    sys_version = ''
+
+    def send_response(self, code, message=None):
+        self.log_request(code)
+        if message is None:
+            if code in self.responses:
+                message = self.responses[code][0]
+            else:
+                message = ''
+        if self.request_version != 'HTTP/0.9':
+            self.wfile.write("%s %d %s\r\n" %
+                             (self.protocol_version, code, message))
+            # print (self.protocol_version, code, message)
+        now = time.time()
+        server_time = random.randrange(int(now - 1800), int(now + 1800), 1)
+        #self.send_header('Server', self.version_string())
+        self.send_header('Date', self.date_time_string(server_time))
+
+    def do_GET(self):
+        with open(URL_LIST, 'r') as f:
+            content = f.readlines()
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/plain')
+        self.end_headers()
+        for i in xrange(25):
+            self.wfile.write(random.choice(content))
+
+
+class ThreadedHTTPServer(SocketServer.ThreadingMixIn, BaseHTTPServer.HTTPServer):
+    pass
+
+
+def main():
+    httpd = ThreadedHTTPServer(('127.0.0.1', 49262), HTTPHandler)
+    httpd.serve_forever()
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)

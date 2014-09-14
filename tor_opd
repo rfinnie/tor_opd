@@ -1,0 +1,107 @@
+#!/bin/bash
+
+# Operation Plausible Deniability (OPD)
+# Copyright (C) 2014 Ryan Finnie
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+
+USER="$(whoami)"
+PROG_NAME="tor_opd"
+TOR_PROXY="127.0.0.1:9050"
+URL_LIST="/dev/shm/${USER}.${PROG_NAME}.urllist"
+URL_LIST_MIN_LINES=100
+URL_LIST_MAX_LINES=10000
+URL_LIST_OLD=43200
+URL_LIST_FREQ=10
+HTTP_AGENT="Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1; .NET CLR 1.1.4322)"
+LOAD_INTERVAL=60
+LOAD_CONCURRENCY=10
+COOKIE_NAME="__utma"
+MAX_COOKIE=2048
+CURL_TIMEOUT=15
+USE_URLSERVER=1
+URLSERVER_URL="http://4dmavioww6random.onion/"
+DDG_DICTIONARY="/usr/share/dict/words"
+DDG_URL="http://3g2upl4pq6kufc4m.onion/"
+
+if [ -n "$OPDRC" ]; then
+  . "$OPDRC"
+fi
+
+build_urllist() {
+  sleep $(( $RANDOM % $LOAD_INTERVAL ))
+  tmpfile="$(mktemp)"
+  if [ "$USE_URLSERVER" = "1" ]; then
+    curl -s --max-time "$CURL_TIMEOUT" --user-agent "$HTTP_AGENT" --socks5-hostname "$TOR_PROXY" "$URLSERVER_URL" | grep '^http' | sort | uniq >"$tmpfile"
+  else
+    randword1="$(shuf -n 1 "$DDG_DICTIONARY" | sed "s/'s$//" | tr '[:upper:]' '[:lower:]')"
+    randword2="$(shuf -n 1 "$DDG_DICTIONARY" | sed "s/'s$//" | tr '[:upper:]' '[:lower:]')"
+    curl -s --max-time "$CURL_TIMEOUT" --user-agent "$HTTP_AGENT" --socks5-hostname "$TOR_PROXY" "$DDG_URL"html/?q="$randword1 $randword2" | perl -MHTML::Entities -ne 'next unless(/<a .{0,40}href="(http.*?)">/); next if($1 =~ /duckduckgo/); print decode_entities($1) . "\n";' | sort | uniq >"$tmpfile"
+  fi
+
+  if [ -s "$tmpfile" ]; then
+    cat "$tmpfile" >>"$URL_LIST"
+    tail -n $URL_LIST_MAX_LINES "$URL_LIST" >"$tmpfile"
+    cat "$tmpfile" >"$URL_LIST"
+  fi
+  rm -f "$tmpfile"
+  if [ $(($(date +%s)-$(stat -c %Y "$URL_LIST"))) -gt $URL_LIST_OLD ]; then
+    echo "WARNING: Last successful URL list pull is very old" >&2
+  fi
+}
+
+load_random_url() {
+  sleep $(( $RANDOM % $LOAD_INTERVAL ))
+  [ -s "$URL_LIST" ] || return
+  [ "$(wc -l "$URL_LIST" | awk '{print $1}')" -ge $URL_LIST_MIN_LINES ] || return
+  cookieval="$(dd if=/dev/urandom bs=512 count=$(($MAX_COOKIE / 512 + 1)) 2>/dev/null | base64 -w 0 | head -c $(( $RANDOM % $MAX_COOKIE )))"
+  curl -v --max-time "$CURL_TIMEOUT" --user-agent "$HTTP_AGENT" --socks5-hostname "$TOR_PROXY" --cookie "$COOKIE_NAME"="$cookieval" "$(shuf -n 1 "$URL_LIST")" >/dev/null 2>&1
+}
+
+for prog in curl perl; do
+  if ! which "$prog" >/dev/null 2>/dev/null; then
+    echo "curl not found" >&2
+    exit 1
+  fi
+done
+
+if ! [ "$USE_URLSERVER" = "1" ]; then
+  for mod in HTML::Entities; do
+    if ! perl -M"$mod" -e 1; then
+      exit 1
+    fi
+  done
+  if ! [ -r "$DDG_DICTIONARY" ]; then
+    echo "$DDG_DICTIONARY not found" >&2
+    exit 1
+  fi
+fi
+
+for file in "$URL_LIST"; do
+  if ! [ -e "$file" ]; then
+    touch "$file"
+    chmod 0600 "$file"
+  fi
+done
+
+while true; do
+  if [ $(( $RANDOM % $URL_LIST_FREQ)) -eq 0 ]; then
+    build_urllist &
+  fi
+  for i in `seq 1 $LOAD_CONCURRENCY`; do
+    load_random_url &
+  done
+  sleep $LOAD_INTERVAL
+done
